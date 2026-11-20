@@ -6,6 +6,7 @@ import { fmtLooker } from "./util";
 
 const api = (cfg: Config, path: string) => `${cfg.lookerBaseUrl}/api/4.0${path}`;
 
+/** Exchange the API3 client id/secret for a short-lived access token (one login per run). */
 export async function login(net: Net, cfg: Config): Promise<string> {
   const res = await send(net, "Looker", api(cfg, "/login"), {
     method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -28,6 +29,7 @@ export async function validateFields(net: Net, cfg: Config, token: string, c: Ca
   if (missing.length) throw new HttpError(`Unknown Looker fields (fix catalog.json): ${missing.join(", ")}`, undefined, true);
 }
 
+/** Run the Explore query for [startMs, endMs) as JSON; the time filter is `<start> to <end>` in UTC, one row per Looker query. */
 export async function queryRows(net: Net, cfg: Config, token: string, c: Catalog, fields: string[], startMs: number, endMs: number): Promise<Row[]> {
   const body = {
     model: c.model, view: c.explore, fields, limit: String(cfg.rowLimit), query_timezone: "UTC",

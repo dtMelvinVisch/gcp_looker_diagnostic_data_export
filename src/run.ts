@@ -25,6 +25,7 @@ export async function runOnce(deps: RunDeps, cfg: Config, p: Payload): Promise<{
   const stats = newStats();
   const net: Net = { ...deps, stats, log, deadline: t0 + cfg.deadlineMs, timeoutMs: cfg.requestTimeoutMs };
 
+  // Window: closed minutes only, [watermark, end). `end` trails now by LAG_SECONDS to let Looker's Explore data settle.
   const end = Math.floor((t0 - cfg.lagS * 1000) / MIN) * MIN;
   const { watermark, generation, counts: prior = {} } = await deps.state.read(p.job);
   let start = watermark ?? end - p.windowMin * MIN;
@@ -39,6 +40,7 @@ export async function runOnce(deps: RunDeps, cfg: Config, p: Payload): Promise<{
   const token = await login(net, cfg);
   await validateFields(net, cfg, token, catalog, fields);
 
+  // One Looker query per window; if it hits the row limit, split the window in half (down to one minute) and recurse.
   const fetchWindow = async (a: number, b: number): Promise<Row[]> => {
     const rows = await queryRows(net, cfg, token, catalog, fields, a, b);
     if (rows.length < cfg.rowLimit) return rows;
@@ -52,6 +54,7 @@ export async function runOnce(deps: RunDeps, cfg: Config, p: Payload): Promise<{
   const resolve = makeDimResolver(rows, cfg, catalog);
   const agg = aggregate(rows, resolve, catalog, p.groups);
   stats.skippedRows = agg.skipped;
+  // Dynatrace only accepts metric timestamps from the last ~1 h (up to a few minutes ahead); anything else is dropped.
   const points = agg.points.filter((x) => x.minute >= deps.now() - 58 * MIN && x.minute <= deps.now() + 5 * MIN);
   stats.outOfRange = agg.points.length - points.length;
   if (stats.outOfRange) log.warn("points outside the Dynatrace timestamp range dropped (clock skew or very late data)", { dropped: stats.outOfRange });
@@ -72,6 +75,8 @@ export async function runOnce(deps: RunDeps, cfg: Config, p: Payload): Promise<{
     if (ev.events.length) await sendEvents(net, cfg, ev.events);
   }
 
+  // Late-row check (optional): `counts` = rows seen per minute, persisted in the watermark object. Re-query the recorded
+  // minutes before this window; any extra rows arrived after we processed them (see README, Late-row check).
   let counts: Record<string, number> | undefined;
   if (p.lateCheckMin > 0) {
     counts = { ...prior };

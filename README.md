@@ -5,7 +5,37 @@ Collects Looker performance diagnostics (the **Query Performance Metrics** Explo
 - **Metrics** `custom.gcp.looker.*`: per-minute gauges (min/max/sum/count), bounded dimensions, via Metrics API v2 line protocol.
 - **Slow-query events**: one OpenPipeline event per query above a configurable threshold, with query ID, masked SQL, the full timing breakdown and the same dimensions as the metrics.
 
-Phase 1 only: no logs, no traces, no PDT Event Log Explore (documented future phase). Nothing in this folder has been deployed.
+Phase 1 only: no logs, no traces, no PDT Event Log Explore (documented future phase). **Status: written and unit-tested, not yet deployed to a real project.**
+
+```mermaid
+flowchart LR
+  S[Cloud Scheduler<br/>overall 1 min / detail 5 min] -- OIDC POST payload --> F[Cloud Run function<br/>lookerDiag]
+  F -- 1 query: login, field check, data --> L[Looker<br/>system__activity]
+  F <-- read/advance watermark --> G[(GCS state bucket<br/>watermark-job.json)]
+  F -- metrics + slow-query events --> D[Dynatrace]
+  SM[Secret Manager] -. env at start .-> F
+```
+
+## Quick start
+
+Prerequisites: a GCP project (billing on) where you are Owner (Terraform enables APIs and creates service accounts), `gcloud config set project <id>` plus Terraform ≥ 1.5 authenticated (`gcloud auth application-default login`), a Looker API user, and a Dynatrace platform token (see [Required permissions](#required-permissions)).
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars   # edit: project, region, Looker and Dynatrace URLs
+terraform init && terraform apply              # creates everything; schedulers paused, secrets hold a REPLACE_ME placeholder
+
+# replace the placeholders with the real values (read from stdin, never on the command line)
+printf '%s' "$LOOKER_CLIENT_ID"     | gcloud secrets versions add looker-client-id --data-file=-
+printf '%s' "$LOOKER_CLIENT_SECRET" | gcloud secrets versions add looker-client-secret --data-file=-
+printf '%s' "$DT_TOKEN"             | gcloud secrets versions add dt-token --data-file=-
+
+# set `schedulers_enabled = true` in terraform.tfvars, then:
+terraform apply                                # start collecting
+```
+
+Then check [Verification in Dynatrace](#verification-in-dynatrace). Remove everything with `terraform destroy` (the watermarks go with the state bucket).
+
 
 ## Architecture and layout
 
@@ -27,6 +57,16 @@ Layout evaluated (27 timing metrics in 5 groups):
 - `looker-diag-detail`, every 5 min: groups `queue`, `init`, `running`, `processing`, plus the late-row check (below). Each run still emits **per-minute** points for its 5-minute window (up to 5 min latency). Change `windowMin`/schedule in the job payload to make it 1 minute.
 
 Each run makes 3 Looker calls (login, field validation, data query; more only if the row limit forces the window to be split).
+
+Job payload (JSON body of the Scheduler POST, defined in `terraform/main.tf`, validated by `parsePayload` in `src/config.ts`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `job` | required | `[a-z0-9-]{1,40}`; names the watermark object, so every job needs its own |
+| `groups` | required | non-empty subset of the catalog groups (`queue`, `init`, `running`, `processing`, `overall`) |
+| `events` | `false` | also emit slow-query events |
+| `windowMin` | `1` | minutes per run (1-60); should match the schedule interval |
+| `lateCheckMin` | `0` (off) | see [Late-row check](#late-row-check-measure-then-tune-lag_seconds) |
 
 ## Metric and event catalog
 
@@ -69,6 +109,7 @@ Run it for a few days, then set `LAG_SECONDS` above the largest `late_delay` you
 | `LOOKER_CLIENT_ID`, `LOOKER_CLIENT_SECRET` | required | from Secret Manager |
 | `LOOKER_BYPASS_CACHE` | `true` | adds `cache=false` (see unverified items) |
 | `DT_ENV_URL` | required | e.g. `https://abc12345.live.dynatrace.com` (host must end in `DT_HOST_SUFFIXES`, default `.dynatrace.com`) |
+| `DT_HOST_SUFFIXES` | `.dynatrace.com` | comma-separated allow-list for the `DT_ENV_URL` host; set for managed/other domains (not exposed in Terraform; add it to `environment_variables`) |
 | `DT_TOKEN` | required | platform token, from Secret Manager |
 | `REGION`, `GCP_PROJECT_ID` | required | `gcp.region` / `gcp.project.id` dimensions (Paris: `europe-west9`) |
 | `STATE_BUCKET` | required | GCS bucket for watermarks |
@@ -79,64 +120,21 @@ Run it for a few days, then set `LAG_SECONDS` above the largest `late_delay` you
 | `REQUEST_TIMEOUT_MS`, `RUN_DEADLINE_MS` | `15000`, `45000` | deadline < 55 s function timeout < 60 s schedule |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
-The environment is validated on every invocation; all problems are reported together (names only, never values).
+Terraform sets the required variables and `SLOW_QUERY_THRESHOLD_S`; the rest keep their defaults (add any of them to `environment_variables` in `terraform/main.tf`). The environment is validated on every invocation; all problems are reported together (names only, never values).
 
 ## Required permissions
 
 - **Looker**: a dedicated API user whose role has only `see_system_activity` (admins also work, but do not use one). API3 client id/secret. Looker (original) instances created before 7 July 2020 on AWS use `LOOKER_BASE_URL` with `:19999`.
 - **Dynatrace**: platform token with `openpipeline:metrics:ingest` and `openpipeline:events:ingest`. (Classic equivalents: `metrics.ingest` and `openpipeline.events`; switching to classic `Api-Token` headers needs a code change.)
-- **GCP**: runtime service account with `secretmanager.secretAccessor` on the three secrets and `storage.objectUser` on the state bucket only. Invoker service account with `run.invoker` on the function.
+- **GCP** (all created by Terraform): runtime service account with `secretmanager.secretAccessor` on the three secrets and `storage.objectUser` on the state bucket only; invoker service account with `run.invoker` on the function; build service account with `cloudbuild.builds.builder`. The person running Terraform needs permission to create these (e.g. Project Owner on a fresh project).
 
-## Deployment (document only, nothing was run)
+## What Terraform creates
 
-```bash
-export PROJECT=my-project REGION=europe-west9 BUCKET=my-project-looker-diag-state
-export LOOKER_URL=https://acme.cloud.looker.com DT_URL=https://abc12345.live.dynatrace.com INSTANCE=acme-prod
-gcloud config set project $PROJECT
-gcloud services enable run.googleapis.com cloudfunctions.googleapis.com cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com secretmanager.googleapis.com cloudscheduler.googleapis.com
+[`terraform/`](terraform) is one flat module: the six required APIs, runtime, invoker and build service accounts with the minimum roles listed under [Required permissions](#required-permissions), a state bucket, three Secret Manager secrets (a `REPLACE_ME` placeholder version so the function can deploy; it would fail at runtime with a Looker 401, which is why schedulers start paused; your real value becomes `latest`), the function (source zipped from this repo and built by Cloud Build via `gcp-build`), and the two Scheduler jobs (retries off: the next run catches up from the watermark). Secret values never enter Terraform state. Secrets are read when an instance starts, so after rotating one, redeploy or wait for instances to scale to zero.
 
-# service accounts
-gcloud iam service-accounts create looker-diag-runtime --display-name="Looker diag runtime"
-gcloud iam service-accounts create looker-diag-invoker --display-name="Looker diag scheduler invoker"
-RUNTIME_SA=looker-diag-runtime@$PROJECT.iam.gserviceaccount.com
-INVOKER_SA=looker-diag-invoker@$PROJECT.iam.gserviceaccount.com
+Confirm Cloud Run functions and Cloud Scheduler are available in your region before applying. `terraform apply` has not been run against a real project yet; treat the first apply as the integration test.
 
-# secrets (values read from stdin, never on the command line)
-for s in looker-client-id looker-client-secret dt-token; do
-  gcloud secrets create $s --replication-policy=user-managed --locations=$REGION
-  gcloud secrets add-iam-policy-binding $s --member=serviceAccount:$RUNTIME_SA --role=roles/secretmanager.secretAccessor
-done
-printf '%s' "$LOOKER_CLIENT_ID"     | gcloud secrets versions add looker-client-id --data-file=-
-printf '%s' "$LOOKER_CLIENT_SECRET" | gcloud secrets versions add looker-client-secret --data-file=-
-printf '%s' "$DT_TOKEN"             | gcloud secrets versions add dt-token --data-file=-
-
-# watermark bucket
-gcloud storage buckets create gs://$BUCKET --location=$REGION --uniform-bucket-level-access
-gcloud storage buckets add-iam-policy-binding gs://$BUCKET --member=serviceAccount:$RUNTIME_SA --role=roles/storage.objectUser
-
-# function (run from this folder)
-gcloud functions deploy looker-diag --gen2 --region=$REGION --runtime=nodejs22 --source=. \
-  --entry-point=lookerDiag --trigger-http --no-allow-unauthenticated \
-  --service-account=$RUNTIME_SA --timeout=55s --memory=256Mi --max-instances=2 \
-  --set-env-vars=LOOKER_BASE_URL=$LOOKER_URL,LOOKER_DEPLOYMENT=core,LOOKER_VERSION=26.20,LOOKER_INSTANCE=$INSTANCE,DT_ENV_URL=$DT_URL,REGION=$REGION,GCP_PROJECT_ID=$PROJECT,STATE_BUCKET=$BUCKET,SLOW_QUERY_THRESHOLD_S=30 \
-  --set-secrets=LOOKER_CLIENT_ID=looker-client-id:latest,LOOKER_CLIENT_SECRET=looker-client-secret:latest,DT_TOKEN=dt-token:latest
-
-URI=$(gcloud functions describe looker-diag --gen2 --region=$REGION --format='value(serviceConfig.uri)')
-gcloud run services add-iam-policy-binding looker-diag --region=$REGION --member=serviceAccount:$INVOKER_SA --role=roles/run.invoker
-
-# scheduler jobs (retries off: the next run catches up from the watermark)
-gcloud scheduler jobs create http looker-diag-overall --location=$REGION --schedule="* * * * *" \
-  --uri=$URI --http-method=POST --headers="Content-Type=application/json" \
-  --message-body='{"job":"overall","groups":["overall"],"events":true,"windowMin":1}' \
-  --oidc-service-account-email=$INVOKER_SA --oidc-token-audience=$URI --attempt-deadline=60s --max-retry-attempts=0
-gcloud scheduler jobs create http looker-diag-detail --location=$REGION --schedule="*/5 * * * *" \
-  --uri=$URI --http-method=POST --headers="Content-Type=application/json" \
-  --message-body='{"job":"detail","groups":["queue","init","running","processing"],"events":false,"windowMin":5,"lateCheckMin":30}' \
-  --oidc-service-account-email=$INVOKER_SA --oidc-token-audience=$URI --attempt-deadline=60s --max-retry-attempts=0
-```
-
-Confirm Cloud Run functions and Cloud Scheduler are available in `europe-west9` for your project before deploying.
+State object (one per job in the state bucket): `watermark-<job>.json` = `{"watermark": <ISO time>, "counts": {<minute>: <rows>}}`, written with `ifGenerationMatch` so two overlapping runs cannot both advance it. Delete it to restart from now.
 
 ## Verification in Dynatrace
 
@@ -163,6 +161,19 @@ timeseries { rows = max(custom.gcp.looker.diag.late_rows), delay = max(custom.gc
 
 Check the run logs in Cloud Logging: `resource.type="cloud_run_revision" jsonPayload.message="run complete"` (fields `rows`, `linesSent`, `linesRejected`, `eventsSent`, `eventsRejected`, `retries`, `lookerMs`, `dtMs`, `durationMs`, trace-correlated).
 
+## Troubleshooting
+
+| Log message / symptom | Meaning |
+|---|---|
+| HTTP 500 `Invalid configuration: ...` | An env var is missing or invalid (names only); fix `terraform.tfvars` and re-apply |
+| 401/403 from Looker, fails immediately | Wrong or still-placeholder secret, or the API user lacks `see_system_activity` |
+| `unknown Looker fields` at startup | `catalog.json` field names differ in your Looker version; fix only the catalog |
+| `watermark gap` warning | Runs were missed for longer than `MAX_CATCHUP_MIN`; that period is skipped |
+| `late rows detected, consider raising LAG_SECONDS` | See [Late-row check](#late-row-check-measure-then-tune-lag_seconds) |
+| 400 from Dynatrace, logged with counts | Invalid lines/events; not retried. Check token scopes first |
+
+Alert on Cloud Run request errors for `looker-diag`; a failing run never advances the watermark, so nothing is lost while it is fixed.
+
 ## Behaviour
 
 - **Windowing / idempotency**: a run reads closed minutes `[watermark, now − LAG)`. The watermark (one GCS object per job, written with `ifGenerationMatch`) advances only after Looker read and Dynatrace sends succeeded. A retry re-reads the same window. Metric points have deterministic timestamps and dimensions; events carry a deterministic `event.id` and are de-duplicated within a run. Dynatrace documents no ingest-side deduplication, so a crash between sending and the watermark write can resend a window: duplicates are possible in that case only; use `dedup event.id` in DQL.
@@ -178,15 +189,17 @@ Check the run logs in Cloud Logging: `resource.type="cloud_run_revision" jsonPay
 - SQL is masked before it leaves the function: strings, numbers, hex, typed literals, IN lists, dollar/triple-quoted strings, placeholders and comments become `*` (double-quoted tokens too). If the SQL cannot be parsed (unterminated quote or comment, NUL, >200 kB) it is dropped and `looker.sql.masked=false`. Unmasked SQL is never logged.
 - Secrets only from Secret Manager env mounts; log values are scrubbed and keys such as token/secret/sql are redacted. Tokens are never logged.
 - URLs: https only, no credentials, no IP literals/localhost/`.internal`, Dynatrace host suffix allow-list, no redirects, URL path parts encoded. A public DNS name that resolves to a private address is a residual risk of operator-set URLs.
-- The function is not publicly invokable (`--no-allow-unauthenticated`, OIDC invoker). Request bodies are validated.
+- The function is not publicly invokable (only the invoker service account has `run.invoker`, OIDC). Request bodies are validated.
 - Residual risks: late-arriving Looker rows after a window closed are missed (measured by the late-row check; tune `LAG_SECONDS`); duplicate sends in the crash case above; masked SQL still exposes table and column names; with identical dimension values a batch hitting the one-minute row limit is truncated and logged (`truncated`).
 
 ## Dependencies
 
-- Runtime: `@google-cloud/functions-framework`, the entrypoint contract for Cloud Run functions (also used for local runs). Everything else is native `fetch` (Looker, Dynatrace, GCS JSON API with the metadata-server token), hand-built line protocol and event JSON.
+- Runtime: `@google-cloud/functions-framework`, the entrypoint contract for Cloud Run functions . Everything else is native `fetch` (Looker, Dynatrace, GCS JSON API with the metadata-server token), hand-built line protocol and event JSON.
 - Dev only: `typescript`, `@types/node`, `vitest`.
 
 ## Develop
+
+There is no local run mode: the function stores its watermark through the GCP metadata server, so `npm test` (mocked Looker, Dynatrace and state) is the local path and real runs happen in GCP via Terraform.
 
 ```bash
 npm install
@@ -194,4 +207,4 @@ npm test           # unit + integration (mocked Looker and Dynatrace HTTP)
 npm run typecheck
 ```
 
-Layout: `src/` (config, catalog, looker, aggregate, lineprotocol, events, mask, dynatrace, state, run, index), `tests/`, `catalog.json`, `dt_assets/` (empty, reserved for dashboards).
+Layout: `terraform/` (deployment), `src/` (config, catalog, looker, aggregate, lineprotocol, events, mask, dynatrace, state, run, index), `tests/`, `catalog.json`, `dt_assets/` (empty, reserved for dashboards).

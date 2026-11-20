@@ -20,3 +20,9 @@ coverage/
 .claude/
 .DS_Store
 *.log
+
+# Terraform
+terraform/.terraform/
+terraform/.build/
+*.tfstate*
+terraform/terraform.tfvars

@@ -5,6 +5,7 @@ export class ConfigError extends Error {
   constructor(public problems: string[]) { super("Invalid configuration: " + problems.join("; ")); }
 }
 
+/** Runtime settings parsed from env vars (see README, Environment variables); `secrets` feeds log redaction. */
 export interface Config {
   lookerBaseUrl: string; lookerDeployment: "core" | "original"; lookerInstance: string; versionCaveat: boolean;
   lookerClientId: string; lookerClientSecret: string; lookerBypassCache: boolean;
@@ -12,11 +13,13 @@ export interface Config {
   slowField: string; slowThresholdS: number; lagS: number; maxCatchupMin: number; maxSeries: number; rowLimit: number; maxDimValues: number;
   requestTimeoutMs: number; deadlineMs: number; logLevel: Level; secrets: string[];
 }
+/** Per-job request body sent by Cloud Scheduler (see README, job payload). */
 export interface Payload { job: string; groups: string[]; events: boolean; windowMin: number; lateCheckMin: number }
 
 type Env = Record<string, string | undefined>;
 const LEVELS = ["debug", "info", "warn", "error"];
 
+/** SSRF guard for operator-set URLs: https, no credentials, no IP literal/localhost/.internal, allowed ports and host suffixes only. */
 function safeUrl(name: string, raw: string | undefined, problems: string[], opts: { suffixes?: string[]; ports?: string[] }): string {
   try {
     const u = new URL(raw ?? "");

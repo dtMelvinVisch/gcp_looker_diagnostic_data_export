@@ -1,0 +1,10 @@
+project_id      = "my-project"
+region          = "europe-west9"
+looker_base_url = "https://acme.cloud.looker.com"
+looker_instance = "acme-prod"
+dt_env_url      = "https://abc12345.live.dynatrace.com"
+
+# looker_deployment      = "core"
+# looker_version         = "26.20"
+# slow_query_threshold_s = 30
+schedulers_enabled = false # set true (and re-apply) after adding the secret values
