@@ -1,0 +1,22 @@
+# Dependencies / build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*service-account*.json
+*secret*
+
+# Local state / tooling
+.remember/
+.claude/
+.DS_Store
+*.log
