@@ -1,0 +1,199 @@
+{
+  "_note": "Field names (Looker side) are best guesses: the docs list display labels only. The function validates them against lookml_model_explore on every run and reports unknown ones. Fix them here, nowhere else.",
+  "model": "system__activity",
+  "explore": "query_performance_metrics",
+  "metricPrefix": "custom.gcp.looker",
+  "unit": "Second",
+  "time": "history.created_time",
+  "queryId": "query.id",
+  "sql": "query.sql",
+  "biEngineMode": "query_performance_metrics.bi_engine_mode",
+  "dimensions": [
+    {
+      "name": "looker.model",
+      "field": "query.model",
+      "description": "The LookML model of the query."
+    },
+    {
+      "name": "looker.explore",
+      "field": "query.view",
+      "description": "The Explore of the query."
+    },
+    {
+      "name": "looker.source",
+      "field": "history.source",
+      "description": "The origin of the query, for example dashboard, explore or scheduled plan."
+    },
+    {
+      "name": "looker.status",
+      "field": "history.status",
+      "description": "The completion status of the query."
+    }
+  ],
+  "constantDimensions": [
+    {
+      "name": "looker.instance",
+      "description": "The Looker instance name (env LOOKER_INSTANCE)."
+    },
+    {
+      "name": "gcp.project.id",
+      "description": "The GCP project identifier."
+    },
+    {
+      "name": "gcp.region",
+      "description": "The GCP region."
+    }
+  ],
+  "event": {
+    "type": "looker.slow_query",
+    "provider": "looker",
+    "name": "Slow Looker query"
+  },
+  "groups": {
+    "queue": {
+      "label": "Timings: Queue",
+      "metrics": [
+        {
+          "id": "queued",
+          "description": "The time a query waited for an async worker."
+        }
+      ]
+    },
+    "init": {
+      "label": "Timings: Initialization & Connection",
+      "metrics": [
+        {
+          "id": "acquire_connection",
+          "description": "The time spent acquiring a database connection."
+        },
+        {
+          "id": "cache_load",
+          "description": "The time spent loading raw results from the result-set cache."
+        },
+        {
+          "id": "explore_init_computed",
+          "description": "The time spent initializing the Explore before preparing the query."
+        },
+        {
+          "id": "explore_init_from_cache",
+          "description": "The time spent loading the Explore initialization from cache."
+        },
+        {
+          "id": "model_init_computed",
+          "description": "The time spent loading and parsing the model."
+        },
+        {
+          "id": "model_init_from_cache",
+          "description": "The time spent loading the model from cache."
+        },
+        {
+          "id": "per_user_throttler",
+          "description": "The time spent waiting for a per-user connection slot."
+        },
+        {
+          "id": "prepare",
+          "description": "The time spent preparing the query from the Explore definition."
+        },
+        {
+          "id": "project_init",
+          "description": "The time spent initializing the LookML project."
+        }
+      ]
+    },
+    "running": {
+      "label": "Timings: Running Queries",
+      "metrics": [
+        {
+          "id": "execute_main_query",
+          "description": "The time spent executing the main query."
+        },
+        {
+          "id": "execute_totals_query",
+          "description": "The time spent executing the totals query."
+        },
+        {
+          "id": "execute_row_totals_query",
+          "description": "The time spent executing the row totals query."
+        },
+        {
+          "id": "execute_grand_totals_query",
+          "description": "The time spent executing the grand totals query."
+        },
+        {
+          "id": "execute_misc_ancillary_queries",
+          "description": "The time spent executing ancillary queries such as extents and dimension fills."
+        },
+        {
+          "id": "load_main_query_in_memory",
+          "description": "The time spent loading the main query result in memory."
+        },
+        {
+          "id": "load_totals_query_in_memory",
+          "description": "The time spent loading the totals query result in memory."
+        },
+        {
+          "id": "load_row_totals_query_in_memory",
+          "description": "The time spent loading the row totals query result in memory."
+        },
+        {
+          "id": "load_grand_totals_query_in_memory",
+          "description": "The time spent loading the grand totals query result in memory."
+        },
+        {
+          "id": "load_misc_ancillary_queries_in_memory",
+          "description": "The time spent loading ancillary query results in memory."
+        },
+        {
+          "id": "load_process_and_stream_main_query",
+          "description": "The time spent loading, processing and streaming the main query."
+        },
+        {
+          "id": "pdts",
+          "description": "The time spent building required persistent derived tables."
+        },
+        {
+          "id": "temporary_dt",
+          "description": "The time spent building temporary derived tables."
+        }
+      ]
+    },
+    "processing": {
+      "label": "Timings: Processing Results",
+      "metrics": [
+        {
+          "id": "postprocessing",
+          "description": "The time spent postprocessing results after the connection closed."
+        },
+        {
+          "id": "stream_to_cache",
+          "description": "The time spent streaming results to the cache."
+        }
+      ]
+    },
+    "overall": {
+      "label": "Timings: Overall",
+      "metrics": [
+        {
+          "id": "async_processing",
+          "description": "The time the async worker spent processing a query."
+        },
+        {
+          "id": "connection_held",
+          "description": "The time Looker held the database connection."
+        }
+      ]
+    }
+  },
+  "diagMetrics": [
+    {
+      "id": "late_rows",
+      "unit": "Count",
+      "description": "The number of Looker rows that appeared after their minute had already been processed."
+    },
+    {
+      "id": "late_delay",
+      "unit": "Second",
+      "description": "The upper bound of the delay between a minute closing and late rows for it appearing in Looker."
+    }
+  ]
+}
